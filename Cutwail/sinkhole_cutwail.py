@@ -84,7 +84,7 @@ def get_checksum(data):
 			xorVal ^= result
 			xorVal &= 0x0FF
 			result >>= 8
-			result ^=table[xorVal]
+			result ^= table[xorVal]
 			i +=1
 	return ~result & 0xFFFFFFFF
 
@@ -108,9 +108,9 @@ def msgScramble(data, seed):
 			result += intToByteArray(element)
 	return result
 
-# Craft reponse body
+# Craft Request Body, for testing only
 
-def responseBody(data, s1, s2,rsaBlob, blobLen):
+def requestBody(data, s1, s2,rsaBlob, blobLen):
 	seed_1 = s1
 	seed_2 = s2
 	checksum = 0
@@ -122,21 +122,66 @@ def responseBody(data, s1, s2,rsaBlob, blobLen):
 	result = struct.pack(fmtStr, seed_1, seed_2, checksum, scrambleBlob, data)
 	return result 
 
+# Craft reponse body
+
+def responseBody(data, s2,rsaBlob, blobLen):
+	# This is constant
+	# The bot gets this value and divide for 0x1ECB, if the remaining is 2, continuse
+	# So the simplest method to make the condition always true is set the value to 0x1ECD (0x1ECB + 2)
+	# 0x1ECD % 0x1ECB = 2
+	seed_1 = 0x1ECD
+	seed_2 = s2
+	checksum = 0
+	# RSABLOB size must be scrambled invidiually
+	scrambleSize = msgScramble(intToByteArray(blobLen), seed_2)
+	cipherBlob = struct.pack("%ds" % blobLen, rsaBlob)
+	# Scramble rsablob
+	scrambleBlob = msgScramble(cipherBlob, seed_2)
+	# Then Put Scrambled blob size before scrambled RSABLOB
+	scrambleBlob = scrambleSize + scrambleBlob
+	# Get Checksum of whole blob (scrambled blob and encrypted data)
+	checksum = get_checksum(scrambleBlob+data)
+	dataLen = len(data)
+	# 20 bytes padding
+	padding = "\x00" * 20
+	fmtStr = "<%dsIII%ds%ds" %(len(padding), blobLen+4, dataLen)
+	result = struct.pack(fmtStr, padding, seed_1, seed_2, checksum, scrambleBlob, data)
+	return result 
+
+# Craft Data structure and transform to Base64
+def craftData(plainData):
+	# Generate Session Key
+	rc4Key = getRandom(128)
+	# Encrypt plain data using rc4 with new generated key
+	cipherData = rc4.rc4(plainData, rc4Key)
+	seed_2 = byteArrayToInt(getRandom(4))
+#	print len(rc4Key)
+	keyBlob = constructBlob(rsaEncrypt("clientPub.pub",rc4Key))
+#	#rint len(keyBlob)
+	return base64.b64encode(responseBody(cipherData, seed_2, keyBlob, len(keyBlob)))
+
+
+
 # Receive request from bot and return value:
 # TODO: Reconstruct a valid message to control the bot
 
-@app.route("/", methods=["POST"])
+@app.route("/", methods=["POST", "GET"])
 def index():
-	data = request.data
-	fmtStr1 = "<III144s"
-	frmSize1 = struct.calcsize(fmtStr1)
-	dataLen = len(data)
-	remainLen = dataLen - fmtSize1
-	seed_1, seed_2, checksum, rsablob = struct.unpack(fmtStr1, data[:fmtSize1])
-	fmtStr2 = "%ds" % remainLen
-	encryptedData = struct.unpack(fmtStr2, data[fmtSize1:])
-	app.logger.debug("%s -> %08X | %08X | %08X | %s | %s" % (request.remote_addr, seed_1, seed_2, checksum, rsablob, encryptedData))
-	return None # TODO
+	if request.data != None:
+		data = request.data
+		fmtStr1 = "<III144s"
+		fmtSize1 = struct.calcsize(fmtStr1)
+		dataLen = len(data)
+		remainLen = dataLen - fmtSize1
+		seed_1, seed_2, checksum, rsablob = struct.unpack(fmtStr1, data[:fmtSize1])
+		fmtStr2 = "%ds" % remainLen
+		encryptedData = struct.unpack(fmtStr2, data[fmtSize1:])
+		app.logger.debug("%s -> %08X | %08X | %08X | %s | %s" % (request.remote_addr, seed_1, seed_2, checksum, rsablob, encryptedData))
+		# For Testing purpose
+		plainData = "This is a test"
+		# This response format is grabbed from binary file itself
+		response = "<img src=\"data:image/jpeg;base64, %s\" />" % (craftData(plainData))
+		return response
 
 # Setup Logging and start Flask built-in server with desired port and local ip
 
@@ -144,15 +189,17 @@ def startServer():
 	ip = getlocalIP()
 	PORT = 80
 	formatter = logging.Formatter("[%(asctime)s] - %(message)s")
-	fileHandler = logger.FileHandler("client.log")
-	fileHandler.addFormatter(formatter)
+	fileHandler = logging.FileHandler("client.log")
+	# Log to File
+	fileHandler.setFormatter(formatter)
 	fileHandler.setLevel(logging.DEBUG)
 	app.logger.addHandler(fileHandler)
-	streamHandler = logger.StreamHandler()
-	streamHandler.addFormatter(formatter)
+	# Log to Console
+	streamHandler = logging.StreamHandler()
+	streamHandler.setFormatter(formatter)
 	streamHandler.setLevel(logging.DEBUG)
 	app.logger.addHandler(streamHandler)
-	app.run(Deubg=True, host=ip, port=PORT, threaded=True)
+	app.run(debug=True, host=ip, port=PORT, threaded=True)
 
 # Unitest for Algorithm
 # Because all of the algos were converted from C code, so i must set up this unittest to check whether they worked or not
@@ -166,10 +213,11 @@ def unitTest():
 	seed_1 = byteArrayToInt("\xAD\x4B\x3E\x9B")
 	seed_2 = byteArrayToInt("\xED\xCC\x38\x23")
 	sample_data = "\xF3\xAA\xA6\x14\x7B\x87\xBA\xC4\x7B\xA8\x7C\x5C\xA5\x2D\x6E\x6F\x70\xBB\x54\xD5\x9A\x1D\xB4\x23\xE6\xBC\x36\xB2\x46\x0F\x03\x72\xCF\x04\x08\x95\xEE\x22\xF4\xC1\xD9\xA8\x81\x44\xB9\x83\x2A\x2F\xA4\x5C\x09\xDD\x0B\xEF\x3A\xE1\x33\xD9\xF9\x29\x9B\x67\xB4\x80\xF1\x5E\x72\x8A\xD6\x5D\xEA\x3C\x0B\xA9\x8F\x18\x8F\xF3\xE7\xCF\xBE\xF7\x7B\x28\x39\xDA\x69\x31\x8C\xAF\x26\x9C\x15\x39\x64\x26\xA1\xB7\xD6\xD4\xD6\x9F\xA2\xA3\x26\x17\x47\xDB\xA3\x82\x61\x49\x83\xFA\xB7\xCF\xB4\x4E\xC8\x90\xE4\xF6\xD0\x45\x4B\x09\x7E\x91\x5E\x24\x17\xA5\xFA\x88\x9F\x73\xA8\x8D\x41\xAC\xE3\xA7\xE7\xD7\x67\x59\xFD\x5A\xC9\xDD\xBA\xBC\x38\x7C\x75\xEC\x55\xDC\xA1\xA9\x76\x23\xCC\xF6\x0B\xEB\x8A\xC7\xB4\xD5\x84\x94\x85\x0A\x78\x16\xBF\x5F\x42\x7C\xAE\xAA\x53\x1F\xF9\x3D\x11\x49\x23\x50\xB1\xB4\xDF\x15\x07\xAC\x92\xE3\xBD\xC9\x44\xFD\x72\xDA\x57\x96\x3A\x94\x3C\x01\xDF\x29\x5B\x24\xB4\x57\x63\xF6\xDC\x4F\x0E\x90\x3C\xF1\xA6\xE6\x20\x9F\xE7\xFB\xE9\xFB\xED\xA8\x37\xEB\x04\xB4\xC2\x61\x77\xD2\x15\xB2\x6F\x3E\x0B\x25\xDB\x46\x5B\x8A\xD5\xD0\xD2\xDD\xBF\xC9\x31\x45\x59\x85\xFB\x61\x69\x16\xA1\xDD\xE1\xE3\x18\xBA\xAF\x14\x1E"
-	response = responseBody(sample_data, seed_1, seed_2, rsablob, len(rsablob))
+	response = requestBody(sample_data, seed_1, seed_2, rsablob, len(rsablob))
 	f = open("msgblob.bin", "wb")
 	f.write(response)
 	f.close()
+	craftData("This is plainText")
 
 if __name__ == "__main__":
 	unitTest()
