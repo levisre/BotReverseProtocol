@@ -19,7 +19,7 @@ BYTE clientPub[0x94] = {0x06, 0x02, 0x00, 0x00, 0x00, 0xa4, 0x00, 0x00, 0x52, 0x
 int main(int argc, char const *argv[])
 {
 	DWORD pbDataLen = 4096, exportedRSALen = 4096;
-	printf("Size of key chunk : %x", sizeof(rsa_key));
+	printf("Size of key chunk : %x", sizeof(clientPub));
 	BYTE* exported_rsa = (BYTE*) malloc(0x1000);
 	BYTE* pbData = (BYTE*) malloc(0x1000);
 	HCRYPTKEY hKey;
@@ -41,7 +41,7 @@ int main(int argc, char const *argv[])
 				fclose(fp);
 				free(plainKey);
 				pbData = 0;
-				if(CryptImportKey(hProv, clientPub, sizeof(rsa_key), 0, 1, (HCRYPTKEY*)&pbData)) {
+				if(CryptImportKey(hProv, clientPub, sizeof(clientPub), 0, 1, (HCRYPTKEY*)&pbData)) {
 					BOOL result;
 					// Export PUBLICKEYBLOB according to session KEYBLOB
 					result = CryptExportKey(hKey, (HCRYPTKEY)pbData, 1, 0, exported_rsa, &exportedRSALen);

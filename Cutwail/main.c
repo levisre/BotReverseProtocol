@@ -124,12 +124,12 @@ BOOL decryptMessage(BYTE* encryptedData, DWORD encryptedDataLen, BYTE* sessionKe
 					//Use RSA key blob to decrypt encrypted session key
 					if(CryptImportKey(hProv, sessionKey, sessionKeyLen, rsa, 1, &hkey)) {
 						// Decrypt Data with decrypted session Key
-						result = CryptDecrypt(hkey, 0, 1, 0, encryptedData, encryptedDataLen);
+						result = CryptDecrypt(hkey, 0, 1, 0, encryptedData, &encryptedDataLen);
 						CryptDestroyKey(hkey);
 					}
 				CryptDestroyKey(rsa);
 				}
-			CryptReleaseContext(hProv);
+			CryptReleaseContext(hProv,0);
 			}
 		}
 	return result;
@@ -170,8 +170,67 @@ BOOL msgDeserialize(BYTE* in, int inLen , msgStruct* out)
     return result;
 }
 
-int main(int argc, char** argv) {
+BOOL writeToFile(BYTE* data, int dataLen, char* filePath, char* mode)
+{
+	FILE* fp = fopen(filePath, mode);
+	if(fp) {
+		fwrite(data, dataLen, 1, fp);
+		fclose(fp);
+		return TRUE;
+	}
+	return FALSE;
+}
 
+BOOL generateSessionKey(BYTE* rc4plain, DWORD *rc4Len, BYTE* rsaBlob, DWORD *rsaLen, BYTE* pubBlob, DWORD pubSize)
+{
+	//DWORD pbDataLen = 4096, exportedRSALen = 4096;
+	BYTE* pbData = (BYTE*) malloc(0x1000);
+	HCRYPTKEY hKey;
+	HCRYPTPROV hProv = 0 ;
+	if(CryptAcquireContextA(&hProv, 0, MS_ENHANCED_PROV, PROV_RSA_FULL, 0) && GetLastError()  != ERROR_SUCCESS ) {
+		CryptAcquireContextA(&hProv, 0, MS_ENHANCED_PROV, 1, 8 );
+	}
+	if(hProv) {
+		BOOL result;
+		hKey = 0;
+		if(CryptGenKey(hProv, CALG_RC4,  0x800001, &hKey)) {
+				// Get KEYBLOB Length
+			if(CryptExportKey(hKey,0,PLAINTEXTKEYBLOB/*8*/,0,NULL,rc4Len)) {
+				// Export Session KEYBLOB and save to FIle
+				CryptExportKey(hKey,0, PLAINTEXTKEYBLOB, 0, rc4plain, rc4Len);
+				pbData = 0;
+				if(CryptImportKey(hProv, pubBlob, pubSize, 0, 1, (HCRYPTKEY*)&pbData)) {
+					// Export PUBLICKEYBLOB according to session KEYBLOB
+					BYTE* exported_rsa = (BYTE*) malloc(0x1000);
+					result = CryptExportKey(hKey, (HCRYPTKEY)pbData, 1, 0, rsaBlob, rsaLen);
+					CryptDestroyKey((HCRYPTKEY)pbData);
+				}
+			}
+			CryptDestroyKey(hKey);
+		}
+		CryptReleaseContext(hProv, 0);
+		return result;
+	}
+	return FALSE;
+}
+
+BOOL sessionKeyToFile()
+{
+	BYTE* rc4plain = (BYTE*) malloc(0x1000);
+	BYTE* rsaBlob = (BYTE*) malloc(0x1000);
+	DWORD rc4Len = 4096, rsaLen = 4096;
+	if(generateSessionKey(rc4plain, &rc4Len, rsaBlob, &rsaLen, bot_rsa_pub_blob, sizeof(bot_rsa_pub_blob))) {
+		writeToFile(rc4plain, rc4Len, (char*) "rc4plain.blob", (char*) "wb");
+		writeToFile(rsaBlob, rsaLen , (char*) "session_rsa.blob", (char*) "wb");
+		free(rc4plain);
+		free(rsaBlob);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+int main(int argc, char** argv) {
+	sessionKeyToFile();
     return (EXIT_SUCCESS);
 }
 
